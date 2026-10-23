@@ -3,7 +3,7 @@
 'use strict';
 
 const md5 = require('../utils/crypto');
-const { decodeURL } = require('hexo-util');
+const { decodeURL, unescapeHTML } = require('hexo-util');
 const compareVersions = require('../../scripts/utils/compare-versions');
 
 hexo.extend.helper.register('md5', function(string) {
@@ -27,3 +27,79 @@ hexo.extend.helper.register('deduplicate', function(arr) {
 });
 
 hexo.extend.helper.register('decode_url', decodeURL);
+
+// 移除正文里的 mermaid 源码，避免图表代码进入摘要和 meta description
+// Strip mermaid source so diagram code never leaks into excerpts or meta descriptions
+// 只匹配独立的 mermaid 类名，避免误伤 mermaid-wrapper 之类的复合类名；单双引号都支持
+// Match only the exact `mermaid` class token, so names like mermaid-wrapper survive
+const MERMAID_OPEN = /<(pre|div|code)\b[^>]*\bclass=(["'])(?:[^"']*\s)?(?:language-)?mermaid(?:\s[^"']*)?\2[^>]*>/gi;
+
+// 从起始标签后向后扫描同名标签，按层级找真正的结束标签；mermaid 的 HTML label 会
+// 嵌套 <div>，惰性正则会停在第一个 </div>，把剩余内容漏进摘要。
+// Scan forward for balanced same-name tags: mermaid HTML labels may contain nested
+// <div>s, which makes a lazy regex stop at the first closing tag and leak the rest.
+function findClosingTag(html, tag, from) {
+  const tagPattern = new RegExp(`<\\/?${tag}\\b[^>]*>`, 'gi');
+  tagPattern.lastIndex = from;
+  let depth = 1;
+  let match;
+  while ((match = tagPattern.exec(html))) {
+    if (/\/>$/.test(match[0])) {
+      continue;
+    }
+    if (match[0][1] === '/') {
+      depth -= 1;
+      if (depth === 0) {
+        return match.index + match[0].length;
+      }
+    } else {
+      depth += 1;
+    }
+  }
+  // 没有配对的结束标签时按到文末处理，宁可少一段摘要也不要漏出图表源码
+  // Unclosed block: treat it as reaching the end so no diagram source leaks
+  return html.length;
+}
+
+hexo.extend.helper.register('strip_mermaid', function(html) {
+  const source = String(html || '');
+  let output = '';
+  let cursor = 0;
+  let match;
+  MERMAID_OPEN.lastIndex = 0;
+  while ((match = MERMAID_OPEN.exec(source))) {
+    const start = match.index;
+    const end = findClosingTag(source, match[1].toLowerCase(), start + match[0].length);
+    output += source.slice(cursor, start) + ' ';
+    cursor = end;
+    MERMAID_OPEN.lastIndex = end;
+  }
+  output += source.slice(cursor);
+  // 第二步清掉只剩空壳的 <pre>，fenced 代码块被剥离后会留下它
+  // Second pass removes the empty <pre> left behind by a fenced block
+  return output.replace(/<pre[^>]*>\s*<\/pre>/gi, ' ');
+});
+
+// 解码 HTML 实体，避免 "&amp;" 原样出现在 meta description 和 JSON-LD 里
+// Decode HTML entities so escaped text does not leak into meta tags and JSON-LD
+hexo.extend.helper.register('unescape_html', function(value) {
+  // hexo-util 只覆盖少量实体，这里补上十进制数字实体（如 &#123;）
+  // hexo-util covers only a few entities; decode decimal numerics as well
+  return unescapeHTML(String(value == null ? '' : value)).replace(/&#(\d+);/g, function(match, code) {
+    const n = Number(code);
+    if (!(n > 0 && n <= 0x10ffff) || (n >= 0xd800 && n <= 0xdfff)) {
+      return match;
+    }
+    return String.fromCodePoint(n);
+  });
+});
+
+// 输出 JSON-LD，转义 < 防止正文里的 </script> 提前闭合标签
+// Emit JSON-LD with < escaped so content cannot close the script tag early
+hexo.extend.helper.register('json_ld', function(data) {
+  if (!data) {
+    return '';
+  }
+  const json = JSON.stringify(data).replace(/</g, '\\u003c');
+  return `<script type="application/ld+json">${json}</script>`;
+});
