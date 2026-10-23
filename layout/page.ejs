@@ -8,11 +8,11 @@ page.banner_mask_alpha = page.banner_mask_alpha || theme.page.banner_mask_alpha
 %>
 
 <article class="page-content">
-  <%- page.content %>
+  <div class="markdown-body">
+    <%- page.content %>
+  </div>
 
   <%- inject_point('pageComments') %>
 </article>
 
-<% if (/<[^>]+? class="[^"]*?markdown-body[^"]*?"/gims.test(page.content)) { %>
-  <%- partial('_partials/markdown-plugins') %>
-<% } %>
+<%- partial('_partials/markdown-plugins') %>
