@@ -53,6 +53,12 @@ hexo.extend.generator.register('_hexo_generator_search', function(locals) {
     posts = locals.posts.sort('-date');
   }
 
+  // --draft 构建时草稿也在 locals.posts 里，但搜索索引不应包含未发布内容
+  // Drafts stay in locals.posts under --draft; keep them out of the search index
+  if (posts) {
+    posts = posts.filter(post => post.published !== false);
+  }
+
   const xml = searchTmpl.render({
     config : config,
     posts  : posts,

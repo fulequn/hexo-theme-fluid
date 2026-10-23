@@ -2,158 +2,148 @@
 
 (function() {
   // Modified from [hexo-generator-search](https://github.com/wzpan/hexo-generator-search)
-  function localSearchFunc(path, searchSelector, resultSelector) {
-    'use strict';
-    // 0x00. environment initialization
-    var $input = jQuery(searchSelector);
-    var $result = jQuery(resultSelector);
+  'use strict';
 
-    if ($input.length === 0) {
-      // eslint-disable-next-line no-console
-      throw Error('No element selected by the searchSelector');
-    }
-    if ($result.length === 0) {
-      // eslint-disable-next-line no-console
-      throw Error('No element selected by the resultSelector');
+  var modal = jQuery('#modalSearch');
+  var $input = jQuery('#local-search-input');
+  var $result = jQuery('#local-search-result');
+  var dataList = null;
+  var loading = false;
+  var searchTimer = null;
+
+  if ($input.length === 0 || $result.length === 0) {
+    throw Error('Local search element not found');
+  }
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, function(character) {
+      return {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[character];
+    });
+  }
+
+  function escapeRegExp(value) {
+    return value.replace(/[.*+?^{}$()|[\]\\]/g, '\\$&');
+  }
+
+  function renderResults() {
+    if (!dataList) {
+      return;
     }
 
-    if ($result.attr('class').indexOf('list-group-item') === -1) {
-      $result.html('<div class="m-auto text-center"><div class="spinner-border" role="status"><span class="sr-only">Loading...</span></div><br/>Loading...</div>');
+    var query = $input.val().trim();
+    var resultHTML = '';
+    var keywords = query.toLowerCase().split(/[\s-]+/).filter(Boolean);
+    if (keywords.length === 0) {
+      $result.html('');
+      $input.removeClass('invalid').removeClass('valid');
+      return;
     }
+    var highlightPattern = new RegExp(keywords.map(escapeRegExp).join('|'), 'gi');
 
+    dataList.forEach(function(data) {
+      var isMatch = true;
+      var firstOccur = -1;
+      if (CONFIG.include_content_in_search && data.searchContent === '') {
+        return;
+      }
+
+      keywords.forEach(function(keyword, index) {
+        var indexTitle = data.searchTitle.indexOf(keyword);
+        var indexContent = data.searchContent.indexOf(keyword);
+        if (indexTitle < 0 && indexContent < 0) {
+          isMatch = false;
+        } else if (index === 0) {
+          firstOccur = Math.max(indexContent, 0);
+        }
+      });
+      if (!isMatch) {
+        return;
+      }
+
+      resultHTML += '<a href="' + escapeHtml(data.url) +
+        '" class="list-group-item list-group-item-action font-weight-bolder search-list-title">' +
+        escapeHtml(data.title) + '</a>';
+
+      if (firstOccur >= 0) {
+        var start = Math.max(firstOccur - 20, 0);
+        var end = start === 0 ? 100 : firstOccur + 80;
+        var snippet = data.content.substring(start, Math.min(end, data.content.length));
+        snippet = snippet.replace(highlightPattern, function(match) {
+          return '<span class="search-word">' + match + '</span>';
+        });
+        resultHTML += '<p class="search-list-content">' + snippet + '...</p>';
+      }
+    });
+
+    if (resultHTML.indexOf('list-group-item') === -1) {
+      $result.html('');
+      $input.addClass('invalid').removeClass('valid');
+      return;
+    }
+    $input.addClass('valid').removeClass('invalid');
+    $result.html(resultHTML);
+  }
+
+  function loadIndex() {
+    if (dataList) {
+      return;
+    }
+    $result.html('<div class="m-auto text-center"><div class="spinner-border" role="status"><span class="sr-only">Loading...</span></div><br/>Loading...</div>');
+    if (loading) {
+      return;
+    }
+    loading = true;
     jQuery.ajax({
-      // 0x01. load xml file
-      url     : path,
+      url: CONFIG.search_path || '/local-search.xml',
       dataType: 'xml',
-      success : function(xmlResponse) {
-        // 0x02. parse xml file
-        var dataList = jQuery('entry', xmlResponse).map(function() {
+      success: function(xmlResponse) {
+        dataList = jQuery('entry', xmlResponse).map(function() {
+          var title = jQuery('title', this).text().trim() || 'Untitled';
+          var content = jQuery('content', this).text().trim().replace(/<[^>]+>/g, '');
           return {
-            title  : jQuery('title', this).text(),
-            content: jQuery('content', this).text(),
-            url    : jQuery('url', this).text()
+            title: title,
+            searchTitle: title.toLowerCase(),
+            content: content,
+            searchContent: content.toLowerCase(),
+            url: jQuery('url', this).text()
           };
         }).get();
-
-        if ($result.html().indexOf('list-group-item') === -1) {
-          $result.html('');
-        }
-
-        $input.on('input', function() {
-          // 0x03. parse query to keywords list
-          var content = $input.val();
-          var resultHTML = '';
-          var keywords = content.trim().toLowerCase().split(/[\s-]+/);
-          $result.html('');
-          if (content.trim().length <= 0) {
-            return $input.removeClass('invalid').removeClass('valid');
-          }
-          // 0x04. perform local searching
-          dataList.forEach(function(data) {
-            var isMatch = true;
-            if (!data.title || data.title.trim() === '') {
-              data.title = 'Untitled';
-            }
-            var orig_data_title = data.title.trim();
-            var data_title = orig_data_title.toLowerCase();
-            var orig_data_content = data.content.trim().replace(/<[^>]+>/g, '');
-            var data_content = orig_data_content.toLowerCase();
-            var data_url = data.url;
-            var index_title = -1;
-            var index_content = -1;
-            var first_occur = -1;
-            // Skip matching when content is included in search and content is empty
-            if (CONFIG.include_content_in_search && data_content === '') {
-              isMatch = false;
-            } else {
-              keywords.forEach(function (keyword, i) {
-                index_title = data_title.indexOf(keyword);
-                index_content = data_content.indexOf(keyword);
-
-                if (index_title < 0 && index_content < 0) {
-                  isMatch = false;
-                } else {
-                  if (index_content < 0) {
-                    index_content = 0;
-                  }
-                  if (i === 0) {
-                    first_occur = index_content;
-                  }
-                }
-              });
-            }
-            // 0x05. show search results
-            if (isMatch) {
-              resultHTML += '<a href=\'' + data_url + '\' class=\'list-group-item list-group-item-action font-weight-bolder search-list-title\'>' + orig_data_title + '</a>';
-              var content = orig_data_content;
-              if (first_occur >= 0) {
-                // cut out 100 characters
-                var start = first_occur - 20;
-                var end = first_occur + 80;
-
-                if (start < 0) {
-                  start = 0;
-                }
-
-                if (start === 0) {
-                  end = 100;
-                }
-
-                if (end > content.length) {
-                  end = content.length;
-                }
-
-                var match_content = content.substring(start, end);
-
-                // highlight all keywords
-                keywords.forEach(function(keyword) {
-                  var regS = new RegExp(keyword, 'gi');
-                  match_content = match_content.replace(regS, '<span class="search-word">' + keyword + '</span>');
-                });
-
-                resultHTML += '<p class=\'search-list-content\'>' + match_content + '...</p>';
-              }
-            }
-          });
-          if (resultHTML.indexOf('list-group-item') === -1) {
-            return $input.addClass('invalid').removeClass('valid');
-          }
-          $input.addClass('valid').removeClass('invalid');
-          $result.html(resultHTML);
-        });
+        loading = false;
+        clearTimeout(searchTimer);
+        searchTimer = null;
+        renderResults();
+      },
+      error: function() {
+        loading = false;
+        $result.html('<div class="m-auto text-center">Search index could not be loaded.</div>');
       }
     });
   }
 
-  function localSearchReset(searchSelector, resultSelector) {
-    'use strict';
-    var $input = jQuery(searchSelector);
-    var $result = jQuery(resultSelector);
-
-    if ($input.length === 0) {
-      // eslint-disable-next-line no-console
-      throw Error('No element selected by the searchSelector');
+  $input.on('input', function() {
+    clearTimeout(searchTimer);
+    if ($input.val().trim() === '') {
+      renderResults();
+    } else {
+      searchTimer = setTimeout(renderResults, 120);
     }
-    if ($result.length === 0) {
-      // eslint-disable-next-line no-console
-      throw Error('No element selected by the resultSelector');
-    }
+  });
 
-    $input.val('').removeClass('invalid').removeClass('valid');
-    $result.html('');
-  }
-
-  var modal = jQuery('#modalSearch');
-  var searchSelector = '#local-search-input';
-  var resultSelector = '#local-search-result';
   modal.on('show.bs.modal', function() {
-    var path = CONFIG.search_path || '/local-search.xml';
-    localSearchFunc(path, searchSelector, resultSelector);
+    loadIndex();
   });
   modal.on('shown.bs.modal', function() {
-    jQuery('#local-search-input').focus();
+    $input.focus();
   });
   modal.on('hidden.bs.modal', function() {
-    localSearchReset(searchSelector, resultSelector);
+    clearTimeout(searchTimer);
+    $input.val('').removeClass('invalid').removeClass('valid');
+    $result.html('');
   });
 })();

@@ -71,6 +71,19 @@ Fluid.plugins = {
     jQuery.fancybox.defaults.hash = false;
     jQuery('.fancybox').fancybox({
       loop   : true,
+      afterLoad: function(instance, current) {
+        if (current.type !== 'image' || !current.$thumb || !current.$thumb.length) { return; }
+        var thumbnail = current.$thumb[0].getBoundingClientRect();
+        if (!thumbnail.width || !thumbnail.height ||
+            (current.width > 0 && current.height > 0 && thumbnail.width <= current.width)) { return; }
+        var width = current.width > 0 && current.height > 0 ? current.width : thumbnail.width;
+        var height = current.width > 0 && current.height > 0 ? current.height : thumbnail.height;
+        var targetWidth = /\.svg(?:[?#]|$)/i.test(current.src)
+          ? Math.max(1600, thumbnail.width * 2)
+          : thumbnail.width;
+        current.height = Math.round(height * targetWidth / width);
+        current.width = targetWidth;
+      },
       helpers: {
         overlay: {
           locked: false
@@ -98,8 +111,11 @@ Fluid.plugins = {
   },
 
   codeWidget() {
+    var self = this;
     var enableLang = CONFIG.code_language.enable && CONFIG.code_language.default;
-    var enableCopy = CONFIG.copy_btn && 'ClipboardJS' in window;
+    var nativeClipboard = navigator.clipboard && typeof navigator.clipboard.writeText === 'function';
+    var clipboardJsAvailable = typeof window.ClipboardJS === 'function';
+    var enableCopy = CONFIG.copy_btn && (clipboardJsAvailable || nativeClipboard);
     if (!enableLang && !enableCopy) {
       return;
     }
@@ -108,16 +124,40 @@ Fluid.plugins = {
       return Fluid.utils.getBackgroundLightness(ele) >= 0 ? 'code-widget-light' : 'code-widget-dark';
     }
 
-    var copyTmpl = '';
-    copyTmpl += '<div class="code-widget">';
-    copyTmpl += 'LANG';
-    copyTmpl += '</div>';
+    function showCopied(button) {
+      button.textContent = '已复制';
+      setTimeout(function() {
+        button.textContent = '复制';
+      }, 2000);
+    }
+
+    function showCopyFailed(button) {
+      button.textContent = '复制失败';
+      setTimeout(function() { button.textContent = '复制'; }, 2000);
+    }
+
+    function bindCopyButton($widget, $pre) {
+      $widget.children('.copy-btn').on('click', function() {
+        var code = $pre.children('code')[0];
+        if (!code) { return; }
+        var button = this;
+        navigator.clipboard.writeText(code.textContent).then(function() {
+          showCopied(button);
+        }).catch(function() {
+          showCopyFailed(button);
+        });
+      });
+    }
+
     jQuery('.markdown-body pre').each(function() {
       var $pre = jQuery(this);
       if ($pre.find('code.mermaid').length > 0) {
         return;
       }
       if ($pre.find('span.line').length > 0) {
+        return;
+      }
+      if ($pre.children('.code-widget').length > 0) {
         return;
       }
 
@@ -137,28 +177,47 @@ Fluid.plugins = {
         }
         lang = lang.toUpperCase().replace('NONE', CONFIG.code_language.default);
       }
-      $pre.append(copyTmpl.replace('LANG', lang).replace('code-widget">',
-        getBgClass($pre[0]) + (enableCopy ? ' code-widget copy-btn" data-clipboard-snippet><i class="iconfont icon-copy"></i>' : ' code-widget">')));
-
+      var $widget = jQuery('<div class="code-widget"></div>').addClass(getBgClass($pre[0]));
+      if (enableLang) {
+        jQuery('<span class="code-language"></span>').text(lang).appendTo($widget);
+      }
       if (enableCopy) {
-        var clipboard = new ClipboardJS('.copy-btn', {
-          target: function(trigger) {
-            var nodes = trigger.parentNode.childNodes;
-            for (var i = 0; i < nodes.length; i++) {
-              if (nodes[i].tagName === 'CODE') {
-                return nodes[i];
-              }
-            }
-          }
-        });
-        clipboard.on('success', function(e) {
-          e.clearSelection();
-          e.trigger.innerHTML = e.trigger.innerHTML.replace('icon-copy', 'icon-success');
-          setTimeout(function() {
-            e.trigger.innerHTML = e.trigger.innerHTML.replace('icon-success', 'icon-copy');
-          }, 2000);
-        });
+        jQuery('<button type="button" class="copy-btn" aria-label="复制代码">复制</button>').appendTo($widget);
+      }
+      $pre.append($widget);
+
+      if (enableCopy && !clipboardJsAvailable) {
+        bindCopyButton($widget, $pre);
+      } else if (enableCopy && self.codeClipboard) {
+        // ClipboardJS 只绑定实例创建时已存在的按钮；解密等场景二次刷新新增的按钮
+        // 不会被它接管，这里补上同样的复制逻辑，避免出现点不动的“复制”
+        // ClipboardJS only binds buttons present at construction; bind later ones here
+        bindCopyButton($widget, $pre);
       }
     });
+
+    if (enableCopy && clipboardJsAvailable && !this.codeClipboard) {
+      this.codeClipboard = new ClipboardJS('.code-widget .copy-btn', {
+        target: function(trigger) {
+          return trigger.parentNode.parentNode.querySelector('code');
+        }
+      });
+      this.codeClipboard.on('success', function(e) {
+        e.clearSelection();
+        showCopied(e.trigger);
+      });
+      this.codeClipboard.on('error', function(e) {
+        var code = e.trigger.parentNode.parentNode.querySelector('code');
+        if (!nativeClipboard || !code) {
+          showCopyFailed(e.trigger);
+          return;
+        }
+        navigator.clipboard.writeText(code.textContent).then(function() {
+          showCopied(e.trigger);
+        }).catch(function() {
+          showCopyFailed(e.trigger);
+        });
+      });
+    }
   }
 };
